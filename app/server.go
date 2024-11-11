@@ -55,7 +55,6 @@ func handleConnection(conn net.Conn) {
 	}
 	method := parts[0]
 	path := parts[1]
-	fmt.Println("Request:", method, path)
 
 	headers := make(map[string]string)
 	for {
