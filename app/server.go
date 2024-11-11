@@ -87,6 +87,31 @@ func handleConnection(conn net.Conn) {
 			"Content-Type: text/plain\r\n" +
 			"Content-Length: " + fmt.Sprint(len(variable)) + "\r\n" +
 			"\r\n" + variable
+	} else if strings.HasPrefix(path, "/files/") {
+		filename := strings.TrimPrefix(path, "/files/")
+		file, err := os.Open("tmp/" + filename)
+		if err != nil {
+			response = "HTTP/1.1 404 Not Found\r\n" +
+				"Content-Type: text/plain\r\n" +
+				"Content-Length: 13\r\n" +
+				"\r\n" + "404 Not Found"
+		} else {
+			fileInfo, _ := file.Stat()
+			fileSize := fileInfo.Size()
+			content := make([]byte, fileSize)
+			_, err = file.Read(content)
+			if err != nil {
+				response = "HTTP/1.1 500 Internal Server Error\r\n" +
+					"Content-Type: text/plain\r\n" +
+					"Content-Length: 24\r\n" +
+					"\r\n" + "500 Internal Server Error"
+			} else {
+				response = "HTTP/1.1 200 OK\r\n" +
+					"Content-Type: text/plain\r\n" +
+					"Content-Length: " + fmt.Sprint(fileSize) + "\r\n" +
+					"\r\n" + string(content)
+			}
+		}
 	} else {
 		response = "HTTP/1.1 404 Not Found\r\n" +
 			"Content-Type: text/plain\r\n" +
