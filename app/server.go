@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -39,12 +40,29 @@ func handleConnection(conn net.Conn) {
 	}
 
 	parts := strings.Split(requestLine, " ")
-	fmt.Println("Request:", parts)
 	if len(parts) < 2 {
 		fmt.Println("Invalid request line:", requestLine)
 		return
 	}
 	path := parts[1]
+
+	// Read headers to find User-Agent
+	headers := make(map[string]string)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading header:", err.Error())
+			return
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		headerParts := strings.SplitN(line, ":", 2)
+		if len(headerParts) == 2 {
+			headers[strings.TrimSpace(headerParts[0])] = strings.TrimSpace(headerParts[1])
+		}
+	}
 
 	var response string
 	if path == "/" {
@@ -53,19 +71,27 @@ func handleConnection(conn net.Conn) {
 			"Content-Length: 20\r\n" +
 			"\r\n" +
 			"Hello, this is a 200!"
+	} else if path == "/user-agent" {
+		userAgent, exists := headers["User-Agent"]
+		if !exists {
+			userAgent = "No User-Agent found"
+		}
+		contentLength := strconv.Itoa(len(userAgent))
+		response = "HTTP/1.1 200 OK\r\n" +
+			"Content-Type: text/plain\r\n" +
+			"Content-Length: " + contentLength + "\r\n" +
+			"\r\n" + userAgent
 	} else if strings.HasPrefix(path, "/echo/") {
 		variable := strings.TrimPrefix(path, "/echo/")
 		response = "HTTP/1.1 200 OK\r\n" +
 			"Content-Type: text/plain\r\n" +
 			"Content-Length: " + fmt.Sprint(len(variable)) + "\r\n" +
-			"\r\n" +
-			variable
+			"\r\n" + variable
 	} else {
 		response = "HTTP/1.1 404 Not Found\r\n" +
 			"Content-Type: text/plain\r\n" +
 			"Content-Length: 13\r\n" +
-			"\r\n" +
-			"404 Not Found"
+			"\r\n" + "404 Not Found"
 	}
 
 	_, err = conn.Write([]byte(response))
