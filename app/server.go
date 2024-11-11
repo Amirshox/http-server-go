@@ -2,15 +2,23 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
+var filesDir string
+
 func main() {
 	fmt.Println("Logs from your program will appear here!")
+
+	dirFlag := flag.String("directory", "", "Directory to serve files from")
+	flag.Parse()
+	filesDir = *dirFlag
 
 	l, err := net.Listen("tcp", "0.0.0.0:4221")
 	if err != nil {
@@ -46,7 +54,6 @@ func handleConnection(conn net.Conn) {
 	}
 	path := parts[1]
 
-	// Read headers to find User-Agent
 	headers := make(map[string]string)
 	for {
 		line, err := reader.ReadString('\n')
@@ -89,29 +96,7 @@ func handleConnection(conn net.Conn) {
 			"\r\n" + variable
 	} else if strings.HasPrefix(path, "/files/") {
 		filename := strings.TrimPrefix(path, "/files/")
-		file, err := os.Open("tmp/" + filename)
-		if err != nil {
-			response = "HTTP/1.1 404 Not Found\r\n" +
-				"Content-Type: text/plain\r\n" +
-				"Content-Length: 13\r\n" +
-				"\r\n" + "404 Not Found"
-		} else {
-			fileInfo, _ := file.Stat()
-			fileSize := fileInfo.Size()
-			content := make([]byte, fileSize)
-			_, err = file.Read(content)
-			if err != nil {
-				response = "HTTP/1.1 500 Internal Server Error\r\n" +
-					"Content-Type: text/plain\r\n" +
-					"Content-Length: 24\r\n" +
-					"\r\n" + "500 Internal Server Error"
-			} else {
-				response = "HTTP/1.1 200 OK\r\n" +
-					"Content-Type: text/plain\r\n" +
-					"Content-Length: " + fmt.Sprint(fileSize) + "\r\n" +
-					"\r\n" + string(content)
-			}
-		}
+		serveFile(conn, filename)
 	} else {
 		response = "HTTP/1.1 404 Not Found\r\n" +
 			"Content-Type: text/plain\r\n" +
@@ -122,5 +107,47 @@ func handleConnection(conn net.Conn) {
 	_, err = conn.Write([]byte(response))
 	if err != nil {
 		fmt.Println("Error writing response:", err.Error())
+	}
+}
+
+func serveFile(conn net.Conn, filename string) {
+	filePath := filepath.Join(filesDir, filename)
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			response := "HTTP/1.1 404 Not Found\r\n\r\n"
+			conn.Write([]byte(response))
+		} else {
+			fmt.Println("Error opening file:", err.Error())
+		}
+		return
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		fmt.Println("Error stating file:", err.Error())
+		return
+	}
+	contentLength := strconv.FormatInt(fileInfo.Size(), 10)
+
+	responseHeaders := "HTTP/1.1 200 OK\r\n" +
+		"Content-Type: application/octet-stream\r\n" +
+		"Content-Length: " + contentLength + "\r\n\r\n"
+
+	_, err = conn.Write([]byte(responseHeaders))
+	if err != nil {
+		fmt.Println("Error writing headers:", err.Error())
+		return
+	}
+
+	buffer := make([]byte, 1024)
+	for {
+		n, err := file.Read(buffer)
+		if err != nil {
+			break
+		}
+		conn.Write(buffer[:n])
 	}
 }
