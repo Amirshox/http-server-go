@@ -53,6 +53,9 @@ func handleConnection(conn net.Conn) {
 			"Content-Length: 20\r\n" +
 			"\r\n" +
 			"Hello, this is a 200!"
+	} else if path.startswith("/echo") {
+		// /echo/abc -> abc
+		fmt.Println("Echo path:", path)
 	} else {
 		response = "HTTP/1.1 404 Not Found\r\n" +
 			"Content-Type: text/plain\r\n" +
