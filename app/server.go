@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -24,21 +26,42 @@ func main() {
 		}
 		go handleConnection(conn)
 	}
-
 }
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Create a simple HTTP response
-	response := "HTTP/1.1 200 OK\r\n" +
-		"Content-Type: text/plain\r\n" +
-		"Content-Length: 25\r\n" +
-		"\r\n" +
-		"Hello, this is a response!"
+	reader := bufio.NewReader(conn)
+	requestLine, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading request:", err.Error())
+		return
+	}
 
-	// Send the response to the client
-	_, err := conn.Write([]byte(response))
+	parts := strings.Split(requestLine, " ")
+	fmt.Println("Request:", parts)
+	if len(parts) < 2 {
+		fmt.Println("Invalid request line:", requestLine)
+		return
+	}
+	path := parts[1]
+
+	var response string
+	if path == "/" {
+		response = "HTTP/1.1 200 OK\r\n" +
+			"Content-Type: text/plain\r\n" +
+			"Content-Length: 20\r\n" +
+			"\r\n" +
+			"Hello, this is a 200!"
+	} else {
+		response = "HTTP/1.1 404 Not Found\r\n" +
+			"Content-Type: text/plain\r\n" +
+			"Content-Length: 13\r\n" +
+			"\r\n" +
+			"404 Not Found"
+	}
+
+	_, err = conn.Write([]byte(response))
 	if err != nil {
 		fmt.Println("Error writing response:", err.Error())
 	}
