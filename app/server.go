@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io"
@@ -80,42 +82,18 @@ func handleConnection(conn net.Conn) {
 		contentEncoding = "gzip"
 	}
 
-	var response string
 	if path == "/" {
 		body := "Hello, this is a 200!"
-		responseHeaders := "HTTP/1.1 200 OK\r\n" +
-			"Content-Type: text/plain\r\n"
-		if contentEncoding != "" {
-			responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
-		}
-		responseHeaders += "Content-Length: " + strconv.Itoa(len(body)) + "\r\n" +
-			"\r\n"
-		response = responseHeaders + body
+		sendResponse(conn, 200, "OK", "text/plain", contentEncoding, body)
 	} else if path == "/user-agent" {
 		userAgent, exists := headers["User-Agent"]
 		if !exists {
 			userAgent = "No User-Agent found"
 		}
-		contentLength := strconv.Itoa(len(userAgent))
-		responseHeaders := "HTTP/1.1 200 OK\r\n" +
-			"Content-Type: text/plain\r\n"
-		if contentEncoding != "" {
-			responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
-		}
-		responseHeaders += "Content-Length: " + contentLength + "\r\n" +
-			"\r\n"
-		response = responseHeaders + userAgent
+		sendResponse(conn, 200, "OK", "text/plain", contentEncoding, userAgent)
 	} else if strings.HasPrefix(path, "/echo/") {
 		variable := strings.TrimPrefix(path, "/echo/")
-
-		responseHeaders := "HTTP/1.1 200 OK\r\n" +
-			"Content-Type: text/plain\r\n"
-		if contentEncoding != "" {
-			responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
-		}
-		responseHeaders += "Content-Length: " + fmt.Sprint(len(variable)) + "\r\n" +
-			"\r\n"
-		response = responseHeaders + variable
+		sendResponse(conn, 200, "OK", "text/plain", contentEncoding, variable)
 	} else if strings.HasPrefix(path, "/files/") {
 		switch method {
 		case "GET":
@@ -126,18 +104,52 @@ func handleConnection(conn net.Conn) {
 			handleFileUpload(conn, reader, headers, strings.TrimPrefix(path, "/files/"))
 			return
 		default:
-			response = "HTTP/1.1 405 Method Not Allowed\r\n"
+			sendResponse(conn, 405, "Method Not Allowed", "text/plain", "", "405 Method Not Allowed")
 		}
 	} else {
-		response = "HTTP/1.1 404 Not Found\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Content-Length: 13\r\n" +
-			"\r\n" + "404 Not Found"
+		sendResponse(conn, 404, "Not Found", "text/plain", "", "404 Not Found")
+	}
+}
+
+func sendResponse(conn net.Conn, statusCode int, statusText, contentType, contentEncoding, body string) {
+	var responseBody []byte
+	var contentLength int
+
+	if contentEncoding == "gzip" {
+		// Compress the body using gzip
+		var buf bytes.Buffer
+		gzipWriter := gzip.NewWriter(&buf)
+		_, err := gzipWriter.Write([]byte(body))
+		if err != nil {
+			fmt.Println("Error compressing response body:", err.Error())
+			return
+		}
+		gzipWriter.Close()
+		responseBody = buf.Bytes()
+		contentLength = len(responseBody)
+	} else {
+		responseBody = []byte(body)
+		contentLength = len(responseBody)
 	}
 
-	_, err = conn.Write([]byte(response))
+	// Build the response headers
+	statusLine := fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, statusText)
+	headers := fmt.Sprintf("Content-Type: %s\r\n", contentType)
+	if contentEncoding != "" {
+		headers += fmt.Sprintf("Content-Encoding: %s\r\n", contentEncoding)
+	}
+	headers += fmt.Sprintf("Content-Length: %d\r\n", contentLength)
+	headers += "\r\n"
+
+	// Send the response
+	_, err := conn.Write([]byte(statusLine + headers))
 	if err != nil {
-		fmt.Println("Error writing response:", err.Error())
+		fmt.Println("Error writing response headers:", err.Error())
+		return
+	}
+	_, err = conn.Write(responseBody)
+	if err != nil {
+		fmt.Println("Error writing response body:", err.Error())
 	}
 }
 
@@ -147,44 +159,62 @@ func serveFile(conn net.Conn, filename string, contentEncoding string) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			response := "HTTP/1.1 404 Not Found\r\n\r\n"
-			conn.Write([]byte(response))
+			sendResponse(conn, 404, "Not Found", "text/plain", "", "404 Not Found")
 		} else {
 			fmt.Println("Error opening file:", err.Error())
+			sendResponse(conn, 500, "Internal Server Error", "text/plain", "", "500 Internal Server Error")
 		}
 		return
 	}
 	defer file.Close()
 
-	fileInfo, err := file.Stat()
+	// Read the entire file content
+	fileContent, err := io.ReadAll(file)
 	if err != nil {
-		fmt.Println("Error stating file:", err.Error())
-		return
-	}
-	contentLength := strconv.FormatInt(fileInfo.Size(), 10)
-
-	responseHeaders := "HTTP/1.1 200 OK\r\n" +
-		"Content-Type: application/octet-stream\r\n"
-	if contentEncoding != "" {
-		responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
-	}
-	responseHeaders += "Content-Length: " + contentLength + "\r\n\r\n"
-
-	_, err = conn.Write([]byte(responseHeaders))
-	if err != nil {
-		fmt.Println("Error writing headers:", err.Error())
+		fmt.Println("Error reading file:", err.Error())
+		sendResponse(conn, 500, "Internal Server Error", "text/plain", "", "500 Internal Server Error")
 		return
 	}
 
-	buffer := make([]byte, 1024)
-	for {
-		n, err := file.Read(buffer)
-		if n > 0 {
-			conn.Write(buffer[:n])
-		}
+	var responseBody []byte
+	var contentLength int
+
+	if contentEncoding == "gzip" {
+		// Compress the file content using gzip
+		var buf bytes.Buffer
+		gzipWriter := gzip.NewWriter(&buf)
+		_, err := gzipWriter.Write(fileContent)
 		if err != nil {
-			break
+			fmt.Println("Error compressing file content:", err.Error())
+			sendResponse(conn, 500, "Internal Server Error", "text/plain", "", "500 Internal Server Error")
+			return
 		}
+		gzipWriter.Close()
+		responseBody = buf.Bytes()
+		contentLength = len(responseBody)
+	} else {
+		responseBody = fileContent
+		contentLength = len(responseBody)
+	}
+
+	// Build the response headers
+	statusLine := "HTTP/1.1 200 OK\r\n"
+	headers := "Content-Type: application/octet-stream\r\n"
+	if contentEncoding != "" {
+		headers += fmt.Sprintf("Content-Encoding: %s\r\n", contentEncoding)
+	}
+	headers += fmt.Sprintf("Content-Length: %d\r\n", contentLength)
+	headers += "\r\n"
+
+	// Send the response
+	_, err = conn.Write([]byte(statusLine + headers))
+	if err != nil {
+		fmt.Println("Error writing response headers:", err.Error())
+		return
+	}
+	_, err = conn.Write(responseBody)
+	if err != nil {
+		fmt.Println("Error writing response body:", err.Error())
 	}
 }
 
@@ -192,15 +222,13 @@ func handleFileUpload(conn net.Conn, reader *bufio.Reader, headers map[string]st
 	// Ensure Content-Length is provided
 	contentLengthStr, exists := headers["Content-Length"]
 	if !exists {
-		response := "HTTP/1.1 411 Length Required\r\nContent-Type: text/plain\r\nContent-Length: 19\r\n\r\n411 Length Required"
-		conn.Write([]byte(response))
+		sendResponse(conn, 411, "Length Required", "text/plain", "", "411 Length Required")
 		return
 	}
 
 	contentLength, err := strconv.Atoi(contentLengthStr)
 	if err != nil || contentLength < 0 {
-		response := "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\n400 Bad Request"
-		conn.Write([]byte(response))
+		sendResponse(conn, 400, "Bad Request", "text/plain", "", "400 Bad Request")
 		return
 	}
 
@@ -209,8 +237,7 @@ func handleFileUpload(conn net.Conn, reader *bufio.Reader, headers map[string]st
 	_, err = io.ReadFull(reader, body)
 	if err != nil {
 		fmt.Println("Error reading request body:", err)
-		response := "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 21\r\n\r\n500 Internal Server Error"
-		conn.Write([]byte(response))
+		sendResponse(conn, 500, "Internal Server Error", "text/plain", "", "500 Internal Server Error")
 		return
 	}
 
@@ -219,12 +246,10 @@ func handleFileUpload(conn net.Conn, reader *bufio.Reader, headers map[string]st
 	err = os.WriteFile(filePath, body, 0644)
 	if err != nil {
 		fmt.Println("Error writing file:", err)
-		response := "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 21\r\n\r\n500 Internal Server Error"
-		conn.Write([]byte(response))
+		sendResponse(conn, 500, "Internal Server Error", "text/plain", "", "500 Internal Server Error")
 		return
 	}
 
 	// Respond with 201 Created
-	response := "HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nContent-Length: 20\r\n\r\n201 Created Successfully"
-	conn.Write([]byte(response))
+	sendResponse(conn, 201, "Created", "text/plain", "", "201 Created Successfully")
 }
