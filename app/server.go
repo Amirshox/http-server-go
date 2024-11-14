@@ -73,34 +73,54 @@ func handleConnection(conn net.Conn) {
 		}
 	}
 
+	// Check for Accept-Encoding header
+	acceptEncoding, exists := headers["Accept-Encoding"]
+	contentEncoding := ""
+	if exists && strings.Contains(acceptEncoding, "gzip") {
+		contentEncoding = "gzip"
+	}
+
 	var response string
 	if path == "/" {
-		response = "HTTP/1.1 200 OK\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Content-Length: 20\r\n" +
-			"\r\n" +
-			"Hello, this is a 200!"
+		body := "Hello, this is a 200!"
+		responseHeaders := "HTTP/1.1 200 OK\r\n" +
+			"Content-Type: text/plain\r\n"
+		if contentEncoding != "" {
+			responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
+		}
+		responseHeaders += "Content-Length: " + strconv.Itoa(len(body)) + "\r\n" +
+			"\r\n"
+		response = responseHeaders + body
 	} else if path == "/user-agent" {
 		userAgent, exists := headers["User-Agent"]
 		if !exists {
 			userAgent = "No User-Agent found"
 		}
 		contentLength := strconv.Itoa(len(userAgent))
-		response = "HTTP/1.1 200 OK\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Content-Length: " + contentLength + "\r\n" +
-			"\r\n" + userAgent
+		responseHeaders := "HTTP/1.1 200 OK\r\n" +
+			"Content-Type: text/plain\r\n"
+		if contentEncoding != "" {
+			responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
+		}
+		responseHeaders += "Content-Length: " + contentLength + "\r\n" +
+			"\r\n"
+		response = responseHeaders + userAgent
 	} else if strings.HasPrefix(path, "/echo/") {
 		variable := strings.TrimPrefix(path, "/echo/")
-		response = "HTTP/1.1 200 OK\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Content-Length: " + fmt.Sprint(len(variable)) + "\r\n" +
-			"\r\n" + variable
+
+		responseHeaders := "HTTP/1.1 200 OK\r\n" +
+			"Content-Type: text/plain\r\n"
+		if contentEncoding != "" {
+			responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
+		}
+		responseHeaders += "Content-Length: " + fmt.Sprint(len(variable)) + "\r\n" +
+			"\r\n"
+		response = responseHeaders + variable
 	} else if strings.HasPrefix(path, "/files/") {
 		switch method {
 		case "GET":
 			filename := strings.TrimPrefix(path, "/files/")
-			serveFile(conn, filename)
+			serveFile(conn, filename, contentEncoding)
 			return
 		case "POST":
 			handleFileUpload(conn, reader, headers, strings.TrimPrefix(path, "/files/"))
@@ -121,7 +141,7 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-func serveFile(conn net.Conn, filename string) {
+func serveFile(conn net.Conn, filename string, contentEncoding string) {
 	filePath := filepath.Join(filesDir, filename)
 
 	file, err := os.Open(filePath)
@@ -144,8 +164,11 @@ func serveFile(conn net.Conn, filename string) {
 	contentLength := strconv.FormatInt(fileInfo.Size(), 10)
 
 	responseHeaders := "HTTP/1.1 200 OK\r\n" +
-		"Content-Type: application/octet-stream\r\n" +
-		"Content-Length: " + contentLength + "\r\n\r\n"
+		"Content-Type: application/octet-stream\r\n"
+	if contentEncoding != "" {
+		responseHeaders += "Content-Encoding: " + contentEncoding + "\r\n"
+	}
+	responseHeaders += "Content-Length: " + contentLength + "\r\n\r\n"
 
 	_, err = conn.Write([]byte(responseHeaders))
 	if err != nil {
@@ -156,10 +179,12 @@ func serveFile(conn net.Conn, filename string) {
 	buffer := make([]byte, 1024)
 	for {
 		n, err := file.Read(buffer)
+		if n > 0 {
+			conn.Write(buffer[:n])
+		}
 		if err != nil {
 			break
 		}
-		conn.Write(buffer[:n])
 	}
 }
 
@@ -200,6 +225,6 @@ func handleFileUpload(conn net.Conn, reader *bufio.Reader, headers map[string]st
 	}
 
 	// Respond with 201 Created
-	response := "HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\n201 Created Successfully"
+	response := "HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nContent-Length: 20\r\n\r\n201 Created Successfully"
 	conn.Write([]byte(response))
 }
